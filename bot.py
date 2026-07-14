@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import logging
+from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from PIL import Image
@@ -8,8 +9,8 @@ import io
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
-from flask import Flask
-import threading
+import asyncio
+import signal
 import sys
 
 # Create Flask app for Render health checks
@@ -18,7 +19,7 @@ app = Flask(__name__)
 @app.route('/')
 @app.route('/health')
 def health_check():
-    return "Bot is running!", 200
+    return jsonify({"status": "healthy", "message": "Bot is running!"}), 200
 
 # Enable logging
 logging.basicConfig(
@@ -31,10 +32,10 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('TELEGRAM_TOKEN')
 
 if not BOT_TOKEN:
-    print("❌ No bot token found! Set TELEGRAM_TOKEN in Render environment.")
+    logger.error("❌ No bot token found! Set TELEGRAM_TOKEN in Render environment.")
     sys.exit(1)
 
-print(f"✅ Token found: {BOT_TOKEN[:10]}...")
+logger.info(f"✅ Token found: {BOT_TOKEN[:10]}...")
 
 # --- BOT FUNCTIONS ---
 
@@ -151,8 +152,10 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update and update.message:
         await update.message.reply_text("❌ Something went wrong. Please try again.")
 
-# Function to run the bot in a separate thread
+# --- Main Application ---
+
 def run_bot():
+    """Run the bot in the main thread"""
     try:
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
@@ -163,21 +166,29 @@ def run_bot():
         ))
         application.add_error_handler(error_handler)
         
-        print("🤖 Bot is starting...")
-        print("✅ Bot is running!")
+        logger.info("🤖 Bot is starting...")
+        logger.info("✅ Bot is running!")
+        
+        # Run polling (this blocks)
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
-        print(f"❌ Bot error: {e}")
+        logger.error(f"❌ Bot error: {e}")
         import traceback
         traceback.print_exc()
 
+# Run Flask in a separate thread, bot in main thread
 if __name__ == '__main__':
-    # Start the bot in a background thread
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
+    import threading
     
-    # Run Flask to keep Render happy
-    port = int(os.environ.get('PORT', 5000))
-    print(f"🌐 Starting web server on port {port}...")
-    app.run(host='0.0.0.0', port=port)
+    # Start Flask in background
+    def run_flask():
+        port = int(os.environ.get('PORT', 5000))
+        logger.info(f"🌐 Starting web server on port {port}...")
+        app.run(host='0.0.0.0', port=port, debug=False)
+    
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    # Run bot in main thread
+    run_bot()
